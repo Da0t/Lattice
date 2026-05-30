@@ -9,6 +9,14 @@ import {
 } from './mesh'
 import { findPath } from './pathfinding'
 import {
+  type RFSample,
+  type RFMode,
+  type RFSource,
+  RF_BUFFER,
+  RF_BASE_FREQ_MHZ,
+  WebSocketRFSource,
+} from './rf'
+import {
   FOB_POSITION,
   RELAY_COUNT,
   RELAY_MIN_RADIUS_KM,
@@ -23,6 +31,13 @@ import {
   PACKET_DURATION_MS,
   PACKET_TRAIL_MS,
   FOB_LINK_RANGE_KM,
+  FOB_REACTION_MS,
+  INTERCEPTOR_SPEED_SCALE,
+  INTERCEPTOR_IMPACT_KM,
+  RF_EMIT_INTERVAL_MS,
+  RF_GATE_PERIOD,
+  RF_GATE_DUTY,
+  RF_NOISE_FLOOR_DBM,
 } from '../data/config'
 
 export interface Fob {
@@ -40,6 +55,18 @@ export interface Drone {
   detected: boolean
   track: [number, number][]
   killAt: number | null
+  engageAt: number | null   // when the FOB launches its interceptor
+  engaged: boolean          // interceptor has been launched at this drone
+}
+
+export interface Interceptor {
+  id: string
+  position: [number, number]
+  heading: number
+  targetId: string
+  fobId: string
+  alive: boolean
+  track: [number, number][]
 }
 
 export interface Packet {
@@ -77,6 +104,7 @@ export interface SandboxState {
   connections: Connection[]
   fobs: Fob[]
   drones: Drone[]
+  interceptors: Interceptor[]
   packets: Packet[]
   interceptLines: InterceptLine[]
   log: LogEntry[]
@@ -85,12 +113,22 @@ export interface SandboxState {
   speed: number
   swarmSize: number
   placementMode: PlacementMode
+  selectedId: string | null
   animationTime: number
   threatsNeutralized: number
+  // RF telemetry
+  rfMode: RFMode
+  rfStatus: string
+  rfLatest: Record<string, RFSample>
+  rfSeries: Record<string, number[]>  // per-node rssi ring buffer
+  rfAggregate: number[]               // mean rssi across online nodes over time
   _relaySeq: number
   _fobSeq: number
   _droneSeq: number
   _packetSeq: number
+  _interceptorSeq: number
+  _rfLastEmit: number
+  _rfPhase: number
 }
 
 function now() {
@@ -204,6 +242,10 @@ export interface SandboxStore extends SandboxState {
   setSwarmSize: (n: number) => void
   setSpeed: (s: number) => void
   setPlacementMode: (m: PlacementMode) => void
+  setSelectedId: (id: string | null) => void
+  ingestRf: (sample: RFSample) => void
+  connectRfSource: (url: string) => void
+  disconnectRfSource: () => void
   play: () => void
   pause: () => void
   reset: () => void
@@ -214,6 +256,7 @@ const initialState: SandboxState = {
   connections: [],
   fobs: DEFAULT_FOBS,
   drones: [],
+  interceptors: [],
   packets: [],
   interceptLines: [],
   log: [],
@@ -222,12 +265,37 @@ const initialState: SandboxState = {
   speed: 1,
   swarmSize: SWARM_DEFAULT_SIZE,
   placementMode: 'relay',
+  selectedId: null,
   animationTime: 0,
   threatsNeutralized: 0,
+  rfMode: 'SIMULATED',
+  rfStatus: 'simulated feed',
+  rfLatest: {},
+  rfSeries: {},
+  rfAggregate: [],
   _relaySeq: 0,
   _fobSeq: 1,
   _droneSeq: 0,
   _packetSeq: 0,
+  _interceptorSeq: 0,
+  _rfLastEmit: 0,
+  _rfPhase: 0,
+}
+
+// Stable per-id hash for de-syncing each node's gate phase.
+function idHash(id: string): number {
+  let h = 0
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) % 997
+  return h
+}
+
+// Active live RF source (WebSocket). Kept outside the store so it isn't part of
+// React state; the store only holds the samples it produces.
+let liveRfSource: RFSource | null = null
+
+function pushBuf(buf: number[] | undefined, v: number): number[] {
+  const next = buf ? [...buf, v] : [v]
+  return next.length > RF_BUFFER ? next.slice(next.length - RF_BUFFER) : next
 }
 
 export const useSimStore = create<SandboxStore>((set, get) => ({
@@ -238,14 +306,54 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
   setSpeed: (s: number) => set({ speed: s }),
   setSwarmSize: (n: number) => set({ swarmSize: n }),
   setPlacementMode: (m: PlacementMode) => set({ placementMode: m }),
+  setSelectedId: (id: string | null) => set({ selectedId: id }),
 
-  reset: () => set({ ...initialState, fobs: [...DEFAULT_FOBS], log: [], animationTime: 0 }),
+  // Single entry point for all RF telemetry — simulated or live. Updates the
+  // per-node ring buffer + latest sample. Aggregate is recomputed in tick.
+  ingestRf: (sample: RFSample) => {
+    const state = get()
+    set({
+      rfLatest: { ...state.rfLatest, [sample.nodeId]: sample },
+      rfSeries: { ...state.rfSeries, [sample.nodeId]: pushBuf(state.rfSeries[sample.nodeId], sample.rssiDbm) },
+    })
+  },
+
+  connectRfSource: (url: string) => {
+    if (liveRfSource) liveRfSource.stop()
+    try {
+      const src = new WebSocketRFSource(url)
+      src.start(s => get().ingestRf(s))
+      liveRfSource = src
+      set({
+        rfMode: 'LIVE',
+        rfStatus: `live · ${url}`,
+        log: pushLog(get().log, `RF SOURCE connected — ${url}`, 'info'),
+      })
+    } catch {
+      set({ rfStatus: 'connection failed' })
+    }
+  },
+
+  disconnectRfSource: () => {
+    if (liveRfSource) { liveRfSource.stop(); liveRfSource = null }
+    set({
+      rfMode: 'SIMULATED',
+      rfStatus: 'simulated feed',
+      log: pushLog(get().log, 'RF SOURCE disconnected — reverting to simulated', 'info'),
+    })
+  },
+
+  reset: () => set({ ...initialState, fobs: [...DEFAULT_FOBS], drones: [], interceptors: [], rfLatest: {}, rfSeries: {}, rfAggregate: [], log: [], animationTime: 0 }),
 
   deployRing: () => {
     const state = get()
     const center = state.fobs[0]?.position ?? FOB_POSITION
     const ring = placeRelays(center, RELAY_COUNT, RELAY_MIN_RADIUS_KM, RELAY_MAX_RADIUS_KM)
-      .map((r, i) => ({ ...r, id: `R-${String(state._relaySeq + i + 1).padStart(2, '0')}`, status: 'online' as const }))
+      .map((r, i) => ({
+        ...r,
+        id: `R-${String(state._relaySeq + i + 1).padStart(2, '0')}`,
+        status: 'online' as const,
+      }))
     const relays = [...state.relays, ...ring]
     const conns = formConnections(relays)
     set({
@@ -340,6 +448,8 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
         detected: false,
         track: [pos],
         killAt: null,
+        engageAt: null,
+        engaged: false,
       })
     }
     set({
@@ -378,55 +488,172 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
       const heading = (Math.atan2(dLng, dLat) * 180) / Math.PI
       const track = d.track.length > 60 ? [...d.track.slice(-60), newPos] : [...d.track, newPos]
       let detected = d.detected
+      let engageAt = d.engageAt
 
+      // First detection by any pylon: route threat data to the FOB, and schedule
+      // the FOB's interceptor to arrive once that data lands (+ reaction delay).
+      // This takes the drone out at range, not point-blank.
       if (!detected) {
         for (const relay of relays) {
           if (relay.status !== 'online') continue
           if (distanceKm(relay.position, newPos) <= relay.range) {
             detected = true
             const waypoints = routeToFob(relay.id, relays, state.connections, fobs)
+            const arrival = PACKET_DURATION_MS
             if (waypoints) {
               packetSeq += 1
               packets = [...packets, makePacket(waypoints, at, packetSeq)]
             }
-            log = pushLog(log, `${relay.id}: THREAT DETECTED — routing to FOB`, 'alert')
+            engageAt = at + arrival + FOB_REACTION_MS
+            log = pushLog(log, `${relay.id}: THREAT DETECTED — routing to ${target?.id ?? 'FOB'}`, 'alert')
             break
           }
         }
       }
 
-      if (target && distanceKm(newPos, target.position) <= INTERCEPT_RADIUS_KM) {
+      // Fail-safe only: if an uncommitted drone reaches the FOB, kill at the
+      // base. Normal kills happen via the tracking interceptor below.
+      const pointBlank = target && distanceKm(newPos, target.position) <= INTERCEPT_RADIUS_KM
+      if (pointBlank && target && !d.engaged) {
         kills += 1
         interceptLines = [
           ...interceptLines,
           { id: `i${d.id}`, from: target.position, to: newPos, expiry: at + 700 },
         ]
-        log = pushLog(log, `${d.id}: NEUTRALIZED by ${target.id} intercept`, 'kill')
-        return { ...d, position: newPos, heading, track, detected, alive: false, killAt: at }
+        log = pushLog(log, `${d.id}: NEUTRALIZED at ${target.id} perimeter`, 'kill')
+        return { ...d, position: newPos, heading, track, detected, engageAt, alive: false, killAt: at }
       }
 
-      return { ...d, position: newPos, heading, track, detected }
+      return { ...d, position: newPos, heading, track, detected, engageAt }
     })
+
+    // Launch a tracking interceptor for each committed drone whose engage time
+    // has arrived (detection data has reached the FOB + reaction delay).
+    let interceptors = state.interceptors
+    let interceptorSeq = state._interceptorSeq
+    const launches: Interceptor[] = []
+    const dronesCommitted = drones.map(d => {
+      if (d.alive && d.detected && !d.engaged && d.engageAt !== null && at >= d.engageAt) {
+        const fob = nearestFob(d.position, fobs)
+        if (fob) {
+          interceptorSeq += 1
+          const hLng = d.position[0] - fob.position[0]
+          const hLat = d.position[1] - fob.position[1]
+          launches.push({
+            id: `X-${interceptorSeq}`,
+            position: [...fob.position] as [number, number],
+            heading: (Math.atan2(hLng, hLat) * 180) / Math.PI,
+            targetId: d.id,
+            fobId: fob.id,
+            alive: true,
+            track: [fob.position],
+          })
+          log = pushLog(log, `${fob.id}: INTERCEPTOR ${`X-${interceptorSeq}`} LAUNCHED → ${d.id}`, 'warn')
+          return { ...d, engaged: true }
+        }
+      }
+      return d
+    })
+
+    // Advance interceptors toward their target drones; detonate on impact.
+    const interceptorStep = stepDeg * INTERCEPTOR_SPEED_SCALE
+    const droneById = new Map(dronesCommitted.map(d => [d.id, d]))
+    const impacted = new Set<string>()
+    interceptors = [...interceptors, ...launches].map(x => {
+      if (!x.alive) return x
+      const tgt = droneById.get(x.targetId)
+      if (!tgt || !tgt.alive) return { ...x, alive: false } // target already gone
+      const dLng = tgt.position[0] - x.position[0]
+      const dLat = tgt.position[1] - x.position[1]
+      const mag = Math.sqrt(dLng * dLng + dLat * dLat) || 1
+      const np: [number, number] = [
+        x.position[0] + (dLng / mag) * interceptorStep,
+        x.position[1] + (dLat / mag) * interceptorStep,
+      ]
+      const heading = (Math.atan2(dLng, dLat) * 180) / Math.PI
+      const trk = x.track.length > 40 ? [...x.track.slice(-40), np] : [...x.track, np]
+      if (distanceKm(np, tgt.position) <= INTERCEPTOR_IMPACT_KM) {
+        impacted.add(x.targetId)
+        interceptLines = [...interceptLines, { id: `i${x.id}`, from: x.position, to: np, expiry: at + 500 }]
+        log = pushLog(log, `${x.targetId}: NEUTRALIZED by ${x.id} — tracking intercept`, 'kill')
+        return { ...x, position: np, heading, track: trk, alive: false }
+      }
+      return { ...x, position: np, heading, track: trk }
+    })
+
+    // Apply interceptor kills to the drones.
+    const drones2 = dronesCommitted.map(d =>
+      impacted.has(d.id) && d.alive ? { ...d, alive: false, killAt: at } : d
+    )
+    kills += impacted.size
 
     relays = relays.map(r => {
       if (r.status !== 'online') return r
-      const alert = drones.some(d => d.alive && distanceKm(d.position, r.position) <= r.range)
+      const alert = drones2.some(d => d.alive && distanceKm(d.position, r.position) <= r.range)
       return alert === !!r.alert ? r : { ...r, alert }
     })
 
-    const liveDrones = drones.filter(d => d.alive || (d.killAt !== null && at - d.killAt < 1200))
+    const liveDrones = drones2.filter(d => d.alive || (d.killAt !== null && at - d.killAt < 1200))
+    const liveInterceptors = interceptors.filter(x => x.alive)
     interceptLines = interceptLines.filter(l => l.expiry > at)
     packets = packets.filter(p => at - p.endTime < PACKET_TRAIL_MS)
+
+    // RF telemetry — a gated RF carrier (carrier pulsed on/off by a gate),
+    // matching how a real captured signal looks: short bursts up to the carrier
+    // power on a noise floor. In SIMULATED mode we synthesize per-relay bursts;
+    // in LIVE mode samples arrive via ingestRf and we only roll the carrier here.
+    let rfLatest = state.rfLatest
+    let rfSeries = state.rfSeries
+    let rfAggregate = state.rfAggregate
+    let rfLastEmit = state._rfLastEmit
+    let rfPhase = state._rfPhase
+    if (at - rfLastEmit >= RF_EMIT_INTERVAL_MS) {
+      rfLastEmit = at
+      rfPhase += 1
+      const online = relays.filter(r => r.status === 'online')
+      if (state.rfMode === 'SIMULATED') {
+        const nextLatest = { ...rfLatest }
+        const nextSeries = { ...rfSeries }
+        for (const r of online) {
+          // Gate this node, phase-offset so nodes don't burst in unison.
+          const gateOn = ((rfPhase + idHash(r.id)) % RF_GATE_PERIOD) < RF_GATE_DUTY
+          const floor = RF_NOISE_FLOOR_DBM + (Math.random() - 0.5) * 3
+          const peak = -58 + Math.min(r.connections.length, 4) * 3 + (Math.random() - 0.5) * 4 - (r.alert ? 6 : 0)
+          const rssiDbm = Math.round(gateOn ? peak : floor)
+          const snrDb = Math.round(18 + (Math.random() - 0.5) * 4 - (r.alert ? 8 : 0))
+          const freqMhz = Math.round((RF_BASE_FREQ_MHZ + (Math.random() - 0.5) * 0.4) * 10) / 10
+          nextLatest[r.id] = { nodeId: r.id, t: Date.now(), rssiDbm, snrDb, freqMhz }
+          nextSeries[r.id] = pushBuf(nextSeries[r.id], rssiDbm)
+        }
+        rfLatest = nextLatest
+        rfSeries = nextSeries
+      }
+      // Aggregate "mesh carrier": one shared gate so the default view reads as a
+      // clean pulsed RF carrier; amplitude grows with the live mesh.
+      const onlineCount = online.length
+      const aggGate = (rfPhase % RF_GATE_PERIOD) < RF_GATE_DUTY
+      const aggFloor = RF_NOISE_FLOOR_DBM + (Math.random() - 0.5) * 2
+      const aggPeak = -54 + Math.min(onlineCount, 12) * 0.7 + (Math.random() - 0.5) * 3
+      const aggVal = Math.round(onlineCount ? (aggGate ? aggPeak : aggFloor) : -100)
+      rfAggregate = pushBuf(rfAggregate, aggVal)
+    }
 
     set({
       animationTime: at,
       drones: liveDrones,
+      interceptors: liveInterceptors,
       relays,
       packets,
       interceptLines,
       log,
       threatsNeutralized: state.threatsNeutralized + kills,
       _packetSeq: packetSeq,
+      _interceptorSeq: interceptorSeq,
+      rfLatest,
+      rfSeries,
+      rfAggregate,
+      _rfLastEmit: rfLastEmit,
+      _rfPhase: rfPhase,
     })
   },
 }))

@@ -15,7 +15,7 @@ export function buildArcLayer(connections: Connection[], relays: Relay[]) {
     getTargetColor: (d: Connection) =>
       d.status === 'rerouted' ? [90, 74, 106, 160] : [58, 90, 74, 160],
     getWidth: 1.5,
-    getHeight: 1.0,
+    getHeight: 0.35,
     greatCircle: false,
     widthMinPixels: 1.5,
     widthMaxPixels: 3,

@@ -3,12 +3,14 @@ import React, { useEffect, useRef, useCallback } from 'react'
 import DeckGL from '@deck.gl/react'
 import Map from 'react-map-gl/mapbox'
 import { useSimStore } from '../sim/state'
-import { buildRelayLayer, buildRingLayer } from '../layers/relays'
+import { buildRelayLayer, buildRingLayer, buildSelectionLayer } from '../layers/relays'
 import { buildTransmitLayer } from '../layers/transmit'
+import { buildSignalLayer } from '../layers/signals'
 import { buildArcLayer } from '../layers/arcs'
 import { buildDroneLayer, buildDroneTrackLayer } from '../layers/drone'
 import { buildPacketLayer } from '../layers/packets'
 import { buildInterceptLayer, buildFobLayer } from '../layers/intercept'
+import { buildInterceptorLayer, buildInterceptorTrailLayer } from '../layers/interceptor'
 import { MAPBOX_TOKEN, FOB_POSITION } from '../data/config'
 import 'mapbox-gl/dist/mapbox-gl.css'
 
@@ -24,10 +26,12 @@ export default function MapView() {
   const relays = useSimStore(s => s.relays)
   const connections = useSimStore(s => s.connections)
   const drones = useSimStore(s => s.drones)
+  const interceptors = useSimStore(s => s.interceptors)
   const packets = useSimStore(s => s.packets)
   const animationTime = useSimStore(s => s.animationTime)
   const interceptLines = useSimStore(s => s.interceptLines)
   const fobs = useSimStore(s => s.fobs)
+  const selectedId = useSimStore(s => s.selectedId)
   const tick = useSimStore(s => s.tick)
   const placeAt = useSimStore(s => s.placeAt)
   const destroyRelayById = useSimStore(s => s.destroyRelayById)
@@ -53,10 +57,14 @@ export default function MapView() {
     buildRingLayer(relays),
     buildTransmitLayer(relays, animationTime),
     buildArcLayer(connections, relays),
+    buildSignalLayer(connections, relays, fobs, animationTime),
+    buildSelectionLayer(relays, fobs, selectedId),
     buildRelayLayer(relays),
     buildFobLayer(fobs),
     buildDroneTrackLayer(drones),
     buildDroneLayer(drones),
+    buildInterceptorTrailLayer(interceptors),
+    buildInterceptorLayer(interceptors),
     buildPacketLayer(packets, animationTime),
     buildInterceptLayer(interceptLines),
   ]

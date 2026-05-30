@@ -3,6 +3,12 @@
 > Living design doc. Kept in sync with the implementation. Sections marked
 > **[v2]** changed when the dashboard became an interactive live sandbox
 > (manual relay/FOB deployment, drone swarms, signal-transmission pulses).
+> **[v3]** added a filterable roster dropdown with inspect, and ambient
+> inter-node signal traffic.
+> **[v4]** Foundry-style console: RF telemetry ingestion (simulated + live
+> WebSocket), bottom signal dock, right Selection/Properties panel, left legend,
+> tracking interceptors. **Asset types were removed — every node is just a relay
+> with links** (plus COMMAND/FOB).
 
 ## Visual Rules
 
@@ -54,12 +60,20 @@ Borders are 1px solid #1a1b1e. Never thicker. Never brighter.
 No shadows, no glows, no gradients, no blur effects.
 
 **[v2] Motion exception — signal transmission.** The original rule forbade
-"pulsing dots." That is relaxed for one purpose only: online relays emit an
-expanding "ping" ring to show they are actively transmitting on the mesh. The
-pulse is a 1px stroked ring, muted teal (#4a6a7a), alpha fading from ~45 to 0 as
-it expands from the node out to its range. It is the single permitted ambient
-animation; it must stay dim and must never read as a glow. No other pulsing,
-blinking, or decorative motion is allowed.
+"pulsing dots." That is relaxed to show that nodes are actively transmitting.
+Two ambient animations are permitted, both dim, neither a glow:
+- **Transmit pulse [v2]** — online relays emit an expanding "ping" ring (1px
+  stroked, fades alpha ~45→0 from node to range). Shows a node is live.
+- **Inter-node signals [v3]** — small muted dots slide along every active mesh
+  link, showing nodes transmitting *to each other*. Muted green
+  (#5a96... ~[90,150,110]), muted purple on rerouted links.
+
+No other pulsing, blinking, or decorative motion is allowed.
+
+**[v4] Node colors.** All relays share one muted steel fill [74,106,122]; amber
+[122,106,58] when on alert; gray [58,58,58] when destroyed. COMMAND/FOB is the
+brightest element [154,155,158]. (Asset types from v3 were removed — nodes are
+relays, not decorative unit types.)
 
 ---
 
@@ -171,6 +185,52 @@ stripped, leaving `relay → … → FOB` waypoints. Relays within
 
 ---
 
+## Nodes & Roster **[v4 — types removed]**
+
+Every deployed node is a **relay** (mesh node with links). FOBs are COMMAND
+nodes; drones are HOSTILE. There are no relay sub-types. **Roster dropdown**
+(`AssetRoster.tsx`): collapsed header `ASSETS · N`, expands to filter chips
+(All / Relay / FOB / Hostile) and a scrollable list — each row id · kind ·
+status · `links · latency · range` (distance-to-FOB for drones). Clicking a row
+sets `selectedId`, which draws a bright highlight ring on the map
+(`buildSelectionLayer`) and opens the Selection panel. Click again to deselect.
+
+## RF Telemetry **[v4]**
+
+The dashboard ingests RF signal telemetry through one stream. `sim/rf.ts`
+defines `RFSample { nodeId, t, rssiDbm, snrDb, freqMhz }` and two sources behind
+an `RFSource` interface:
+- **SimulatedRFSource** (default) — synthesizes plausible per-relay samples;
+  rssi tracks link count, degrades on alert.
+- **WebSocketRFSource** — connects to a real receiver/SDR bridge; same
+  `ingestRf` entry point feeds every consumer. Point it at a `ws://…` URL via
+  the bottom dock's **Connect Live** control.
+
+Store: `rfMode`, `rfLatest[nodeId]`, `rfSeries[nodeId]` (ring buffer),
+`rfAggregate` (mean rssi over time). The Selection "Series" tab and the bottom
+dock plot these. To go live: `connectRfSource(url)`.
+
+## Tracking Interceptor **[v4 — replaces instant intercept]**
+
+When a pylon detects a drone, threat data routes to the nearest FOB. Once it
+lands (+ `FOB_REACTION_MS`), the FOB **launches a tracking interceptor** — a fast
+munition (`INTERCEPTOR_SPEED_SCALE = 2.4× drone speed`) that flies from the FOB
+and chases the drone's live position, detonating within
+`INTERCEPTOR_IMPACT_KM`. This takes threats out at range, not point-blank. A
+point-blank kill at the FOB perimeter remains only as a fail-safe. Interceptors
+render as a bright dot + short red trail (`layers/interceptor.ts`).
+
+## Panels **[v4]**
+
+- **Legend** (`Legend.tsx`, floats top-left over map): node / mesh / threat
+  color key.
+- **SelectionPanel** (`SelectionPanel.tsx`, floats top-right): Properties /
+  Series / Events tabs for the selected node, with a Filter box. Series shows
+  the node's RF chart; Events filters the log to that id.
+- **BottomDock** (`BottomDock.tsx`): transport (play/pause/speed), mission
+  clock, RF source status + Connect Live, a SERIES list, and the live RF signal
+  chart (selected node, else mesh aggregate). Replaces the v2 transport bar.
+
 ## FOBs **[v2]**
 
 ```ts
@@ -211,13 +271,24 @@ each frame from live threats in range.
 
 ## deck.gl Layer Specs
 
-Render order (bottom → top): detection rings, **transmit pulses [v2]**, mesh
-arcs, relay nodes, FOBs, drone tracks, drones, data packets, intercept lines.
+Render order (bottom → top): detection rings, transmit pulses, mesh arcs,
+inter-node signals, selection ring, relay nodes, FOBs, drone tracks, drones,
+**interceptor trails + interceptors [v4]**, data packets, intercept flashes.
 
 ### Relay Nodes — ScatterplotLayer
-`getFillColor` by status: online `[74,106,122,180]` (amber `[122,106,58,220]`
-when `alert`), booting dim, destroyed `[58,58,58,120]`. `pickable: true` so map
+`getFillColor` by **asset type [v3]** when online (amber `[122,106,58,220]` when
+`alert`), booting dim, destroyed `[58,58,58,120]`. `pickable: true` so map
 clicks can destroy a relay. Color/radius transitions 500/300 ms.
+
+### Inter-node Signals — ScatterplotLayer **[v3 — new]**
+Two muted dots per active link slide from `from`→`to`, position =
+`lerp(a, b, ((animationTime/1600)+offset+phase)%1)`, offset hashed from the
+connection id. Green `[90,150,110,180]`, purple `[120,100,140,180]` on rerouted.
+`radiusMinPixels: 1.5`. Computed each frame; nothing stored in the sim.
+
+### Selection Ring — ScatterplotLayer (stroked) **[v3 — new]**
+Single bright stroked ring `[154,155,158,230]` around `selectedId` (relay or
+FOB). Empty layer when nothing selected.
 
 ### Detection Rings — ScatterplotLayer (stroked)
 Per online relay, radius = `range * 1000` m. Line color amber when alert, else
@@ -286,9 +357,11 @@ hovering a relay; top-level `onClick` routes to destroy (hit a relay) or place
 ```
 dashboard/
   app/            page.tsx, layout.tsx, globals.css
-  components/     Map, Controls [v2], EventLog, MeshStatus, Timeline (transport [v2]), TopBar
-  layers/         relays, rings (in relays.ts), transmit [v2], arcs, drone, packets, intercept (+ fob)
-  sim/            state.ts (zustand sandbox store [v2]), mesh.ts, pathfinding.ts
+  components/     Map, Controls [v2], AssetRoster [v3], SelectionPanel [v4], Legend [v4],
+                  BottomDock [v4], SignalChart [v4], EventLog, MeshStatus, TopBar
+  layers/         relays (+ rings, selection), transmit, signals, arcs, drone,
+                  interceptor [v4], packets, intercept (+ fob)
+  sim/            state.ts (zustand sandbox store), mesh.ts, pathfinding.ts, rf.ts [v4]
   data/           config.ts
   public/         drone.svg
 ```

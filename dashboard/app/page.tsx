@@ -2,9 +2,12 @@
 import dynamic from 'next/dynamic'
 import TopBar from '../components/TopBar'
 import Controls from '../components/Controls'
+import AssetRoster from '../components/AssetRoster'
 import EventLog from '../components/EventLog'
 import MeshStatus from '../components/MeshStatus'
-import Timeline from '../components/Timeline'
+import BottomDock from '../components/BottomDock'
+import Legend from '../components/Legend'
+import SelectionPanel from '../components/SelectionPanel'
 
 const MapView = dynamic(() => import('../components/Map'), { ssr: false })
 
@@ -33,6 +36,8 @@ export default function Home() {
           }}
         >
           <MapView />
+          <Legend />
+          <SelectionPanel />
         </div>
 
         {/* Right sidebar */}
@@ -48,6 +53,11 @@ export default function Home() {
           {/* Controls — top */}
           <div style={{ flexShrink: 0, borderBottom: '1px solid #1a1b1e' }}>
             <Controls />
+          </div>
+
+          {/* Asset roster dropdown */}
+          <div style={{ flexShrink: 0 }}>
+            <AssetRoster />
           </div>
 
           {/* Event log — fills remaining space */}
@@ -71,7 +81,7 @@ export default function Home() {
         </div>
       </div>
 
-      <Timeline />
+      <BottomDock />
     </div>
   )
 }
