@@ -11,14 +11,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from . import config
-from .publisher import MulticastPublisher, build_event
-from .state import DetectionState
+import config
+from publisher import MulticastPublisher, build_event
+from state import DetectionState
 
 state = DetectionState()
 publisher = MulticastPublisher()
 
-# Optional hands-free demo toggling; set by __main__ before launch (0 = off).
+# Optional hands-free demo toggling; set by main.py before launch (0 = off).
 auto_toggle_s = 0.0
 
 

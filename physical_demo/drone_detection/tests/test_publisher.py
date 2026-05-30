@@ -2,8 +2,8 @@ import json
 import socket
 import struct
 
-from drone_detection import config
-from drone_detection.publisher import MulticastPublisher, build_event
+import config
+from publisher import MulticastPublisher, build_event
 
 CONTRACT_KEYS = {
     "node_id",

@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from drone_detection import config, service
+import config
+import service
 
 
 @pytest.fixture(autouse=True)

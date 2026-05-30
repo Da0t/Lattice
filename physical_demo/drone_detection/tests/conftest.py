@@ -3,7 +3,7 @@ import struct
 
 import pytest
 
-from drone_detection import config
+import config
 
 
 @pytest.fixture

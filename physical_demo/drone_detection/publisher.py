@@ -7,8 +7,8 @@ stub values from `config`; the schema is what stays fixed for the relay.
 import json
 import socket
 
-from . import config
-from .state import iso_now
+import config
+from state import iso_now
 
 
 def build_event(snapshot: dict) -> dict:

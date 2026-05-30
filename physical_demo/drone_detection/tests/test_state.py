@@ -1,6 +1,6 @@
 import re
 
-from drone_detection.state import DetectionState
+from state import DetectionState
 
 ISO_Z = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 

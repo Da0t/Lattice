@@ -4,7 +4,8 @@ import re
 import pytest
 from fastapi.testclient import TestClient
 
-from drone_detection import config, service
+import config
+import service
 
 ISO_Z = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$")
 

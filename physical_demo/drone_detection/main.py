@@ -1,9 +1,10 @@
-"""CLI entrypoint: ``python -m drone_detection``."""
+"""CLI entrypoint: ``python main.py``."""
 import argparse
 
 import uvicorn
 
-from . import config, service
+import config
+import service
 
 
 def main() -> None:

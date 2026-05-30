@@ -23,8 +23,8 @@ pip install -r requirements.txt
 
 ## Run
 ```bash
-python -m drone_detection                 # serve on :5001, publish to 239.1.1.1:5000
-python -m drone_detection --auto-toggle 5 # hands-free: flip detection every 5s
+python main.py                 # serve on :5001, publish to 239.1.1.1:5000
+python main.py --auto-toggle 5 # hands-free: flip detection every 5s
 ```
 Overridable via env vars (`DRONE_SERVICE_PORT`, `DRONE_MCAST_GROUP`,
 `DRONE_MCAST_PORT`, `DRONE_NODE_ID`, `DRONE_PUBLISH_INTERVAL_S`) or flags

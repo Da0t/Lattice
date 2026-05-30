@@ -3,7 +3,7 @@
 These are the values agreed in the contract (see PLAN.md). Override any of them
 at runtime via environment variables of the same name, e.g.::
 
-    DRONE_MCAST_GROUP=239.2.2.2 python -m drone_detection
+    DRONE_MCAST_GROUP=239.2.2.2 python main.py
 """
 import os
 
