@@ -414,6 +414,12 @@ const INITIAL_VIEW = {
 On `style.load`: background and water → `#08090a`; all symbol label text →
 `#2a2b2e` with `#08090a` halo; boundary/admin lines → `#1a1b1e` at 0.3 opacity.
 
+**Mercator projection [v5.7].** The map is pinned to `mercator` (prop +
+`map.setProjection('mercator')`). deck.gl draws the markers in a flat mercator
+viewport; with Mapbox's default globe projection (which kicks in when zoomed
+out) the FOBs/relays/drones would float off the curved globe ("in space").
+Mercator keeps basemap and overlays aligned at every zoom.
+
 **3D terrain [v5].** Adds a `mapbox-dem` raster-dem source and
 `map.setTerrain({ source: 'mapbox-dem', exaggeration: TERRAIN_EXAGGERATION })`
 (1.5) so relief shows under the pitch. A subtle dark `hillshade` layer
