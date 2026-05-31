@@ -3,7 +3,6 @@ import type { Relay, Connection } from './mesh'
 import {
   placeRelays,
   formConnections,
-  destroyRelay,
   healMesh,
   distanceKm,
 } from './mesh'
@@ -544,16 +543,27 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
   destroyRelayById: (id: string) => {
     const state = get()
     const target = state.relays.find(r => r.id === id)
-    if (!target || target.status === 'destroyed') return
-    const { relays, connections } = destroyRelay(id, state.relays, state.connections)
-    const healed = healMesh(relays, connections)
+    if (!target) return
+    // Remove the relay entirely — no leftover marker — clear it from neighbor
+    // connection lists, drop its links, then self-heal the surviving mesh.
+    const relays = state.relays.filter(r => r.id !== id)
+    relays.forEach(r => { r.connections = r.connections.filter(c => c !== id) })
+    const survivingConns = state.connections.filter(c => c.from !== id && c.to !== id)
+    const healed = healMesh(relays, survivingConns)
     const rerouted = healed.filter(c => c.status === 'rerouted').length
+
+    const rfLatest = { ...state.rfLatest }; delete rfLatest[id]
+    const rfSeries = { ...state.rfSeries }; delete rfSeries[id]
+
     set({
       relays,
       connections: healed,
       meshHealth: computeHealth(relays, healed),
+      selectedId: state.selectedId === id ? null : state.selectedId,
+      rfLatest,
+      rfSeries,
       log: pushLog(
-        pushLog(state.log, `${id} DESTROYED — mesh degraded`, 'kill'),
+        pushLog(state.log, `${id} REMOVED — mesh degraded`, 'kill'),
         rerouted ? `MESH self-healing — ${rerouted} paths rerouted` : 'MESH stable — no reroute needed',
         'warn'
       ),

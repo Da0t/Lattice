@@ -110,6 +110,14 @@ export default function MapView() {
   function handleMapLoad(e: any) {
     const map = e.target
 
+    // Pin to mercator. deck.gl renders the markers in a flat mercator viewport;
+    // if the basemap used the globe projection (Mapbox's default when zoomed
+    // out), the markers would float off the curved globe ("in space"). Mercator
+    // keeps the basemap and the deck.gl overlays aligned at every zoom.
+    try {
+      map.setProjection('mercator')
+    } catch {}
+
     // Register a land/water tester for the sim (vessels stay on water).
     const waterLayers = (map.getStyle()?.layers || [])
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -278,6 +286,7 @@ export default function MapView() {
       <Map
         mapboxAccessToken={MAPBOX_TOKEN}
         mapStyle="mapbox://styles/mapbox/dark-v11"
+        projection={{ name: 'mercator' }}
         onLoad={handleMapLoad}
       />
     </DeckGL>
