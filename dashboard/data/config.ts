@@ -1,4 +1,4 @@
-export const FOB_POSITION: [number, number] = [52.1, 32.9]
+export const FOB_POSITION: [number, number] = [56.00, 25.71]
 export const RELAY_COUNT = 10
 export const RELAY_MIN_RADIUS_KM = 11
 export const RELAY_MAX_RADIUS_KM = 17
