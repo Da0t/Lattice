@@ -72,4 +72,25 @@ export const TERRAIN_EXAGGERATION = 1.5
 // sample terrain elevation so the pad slants to match the slope. ~0.008° ≈ 0.9km.
 export const NODE_PAD_HALF_DEG = 0.008
 
+// Asset hit points. Attacking hostiles kamikaze on contact, dealing
+// KAMIKAZE_DAMAGE to whatever they detonate on. The FOB is hardened (survives
+// several breaches); relay nodes are fragile and drop fast.
+export const FOB_MAX_HP = 100
+export const RELAY_MAX_HP = 40
+export const KAMIKAZE_DAMAGE = 25
+// Radius (km) within which an attacking hostile detonates on a relay node it
+// reaches. FOB detonation reuses INTERCEPT_RADIUS_KM (the perimeter radius).
+export const NODE_KAMIKAZE_KM = 1.6
+
+// Ambient patrols: non-attacking hostiles that wander their own domain (vessels
+// on water, vehicles on land, UAVs anywhere) to give the theatre natural life.
+// They never seek the FOB and are never engaged. Capped, spawned on this cadence.
+export const PATROL_MAX_COUNT = 6
+export const PATROL_SPAWN_INTERVAL_MS = 8000
+// Patrollers mosey — fraction of their class cruise speed.
+export const PATROL_SPEED_SCALE = 0.5
+// Distance (km) at which a patroller is considered to have reached its waypoint
+// and picks a new one.
+export const PATROL_WAYPOINT_REACH_KM = 1.2
+
 export const MAPBOX_TOKEN = process.env.NEXT_PUBLIC_MAPBOX_TOKEN || ''

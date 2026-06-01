@@ -1,4 +1,4 @@
-import { RELAY_RANGE_MIN_KM, RELAY_RANGE_SPREAD_KM } from '../data/config'
+import { RELAY_RANGE_MIN_KM, RELAY_RANGE_SPREAD_KM, RELAY_MAX_HP } from '../data/config'
 
 export interface Relay {
   id: string
@@ -9,6 +9,8 @@ export interface Relay {
   alert?: boolean
   elevation?: number
   pad?: number[][]   // 4 terrain-sampled corners; slants the node to the slope
+  hp?: number        // integrity; depleted by hostile kamikaze hits
+  maxHp?: number
 }
 
 export interface Connection {
@@ -44,6 +46,8 @@ export function placeRelays(
       range: RELAY_RANGE_MIN_KM + Math.random() * RELAY_RANGE_SPREAD_KM,
       status: 'offline',
       connections: [],
+      hp: RELAY_MAX_HP,
+      maxHp: RELAY_MAX_HP,
     })
   }
   return relays

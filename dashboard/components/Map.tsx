@@ -1,5 +1,5 @@
 'use client'
-import React, { useEffect, useRef, useCallback, useState } from 'react'
+import React, { useEffect, useRef, useCallback, useState, useMemo } from 'react'
 import DeckGL from '@deck.gl/react'
 import { FlyToInterpolator } from '@deck.gl/core'
 import Map from 'react-map-gl/mapbox'
@@ -75,14 +75,26 @@ export default function MapView() {
     return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current) }
   }, [animate])
 
+  // Static mesh layers — rebuilt only when the mesh itself changes (placement,
+  // self-heal, selection, alert flips), not on every animation frame. deck.gl
+  // treats a reused layer instance as unchanged and skips its GPU update, so
+  // memoizing here keeps the per-frame work to just the moving/animated layers.
+  const padLayer = useMemo(() => buildPadLayer(relays, fobs), [relays, fobs])
+  const ringLayer = useMemo(() => buildRingLayer(relays), [relays])
+  const arcLayer = useMemo(() => buildArcLayer(connections, relays), [connections, relays])
+  const fobLinkLayer = useMemo(() => buildFobLinkLayer(relays, fobs), [relays, fobs])
+  const selectionLayer = useMemo(() => buildSelectionLayer(relays, fobs, selectedId), [relays, fobs, selectedId])
+  const relayLayer = useMemo(() => buildRelayLayer(relays), [relays])
+
+  // Order preserved from the original draw order (z-stacking matters here).
   const layers = [
-    buildPadLayer(relays, fobs),
-    buildRingLayer(relays),
+    padLayer,
+    ringLayer,
     buildTransmitLayer(relays, animationTime),
-    buildArcLayer(connections, relays),
-    buildFobLinkLayer(relays, fobs),
-    buildSelectionLayer(relays, fobs, selectedId),
-    buildRelayLayer(relays),
+    arcLayer,
+    fobLinkLayer,
+    selectionLayer,
+    relayLayer,
     buildDroneTrackLayer(drones),
     buildDroneLayer(drones),
     buildInterceptorTrailLayer(interceptors),

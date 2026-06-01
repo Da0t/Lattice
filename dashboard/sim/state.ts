@@ -43,6 +43,14 @@ import {
   RF_GATE_PERIOD,
   RF_GATE_DUTY,
   RF_NOISE_FLOOR_DBM,
+  FOB_MAX_HP,
+  RELAY_MAX_HP,
+  KAMIKAZE_DAMAGE,
+  NODE_KAMIKAZE_KM,
+  PATROL_MAX_COUNT,
+  PATROL_SPAWN_INTERVAL_MS,
+  PATROL_SPEED_SCALE,
+  PATROL_WAYPOINT_REACH_KM,
 } from '../data/config'
 
 export interface Fob {
@@ -50,13 +58,21 @@ export interface Fob {
   position: [number, number]
   elevation?: number
   pad?: number[][]
+  hp: number                // integrity; depleted by hostile kamikaze breaches
+  maxHp: number
+  destroyed?: boolean
 }
 
 export type PlacementMode = 'relay' | 'fob' | 'hostile'
 
+// 'attack' hostiles seek the nearest FOB and kamikaze whatever they reach.
+// 'patrol' hostiles wander their own domain as ambient activity and never engage.
+export type DroneBehavior = 'attack' | 'patrol'
+
 export interface Drone {
   id: string
   kind: HostileType         // AIR | WATER | GROUND
+  behavior: DroneBehavior
   position: [number, number]
   heading: number
   alive: boolean
@@ -66,6 +82,7 @@ export interface Drone {
   engageAt: number | null   // when the FOB launches its interceptor
   engaged: boolean          // interceptor has been launched at this drone
   targetFobId: string | null
+  wanderTarget?: [number, number] | null  // current patrol waypoint
 }
 
 export interface Interceptor {
@@ -169,6 +186,7 @@ export interface SandboxState {
   _interceptorSeq: number
   _rfLastEmit: number
   _rfPhase: number
+  _lastPatrolSpawn: number
 }
 
 function now() {
@@ -237,14 +255,68 @@ function viewportSpawn(vp: Viewport, kind: HostileType, side: number, i: number,
 }
 
 function nearestFob(pos: [number, number], fobs: Fob[]): Fob | null {
-  if (fobs.length === 0) return null
-  let best = fobs[0]
+  const live = fobs.filter(f => !f.destroyed)
+  if (live.length === 0) return null
+  let best = live[0]
   let bd = Infinity
-  for (const f of fobs) {
+  for (const f of live) {
     const d = distanceKm(pos, f.position)
     if (d < bd) { bd = d; best = f }
   }
   return best
+}
+
+// Domain test for a hostile class: vessels need water, vehicles need land, UAVs
+// go anywhere. Used by patrol wandering and spawning.
+function inDomain(kind: HostileType, lng: number, lat: number): boolean {
+  if (kind === 'AIR') return true
+  return kind === 'WATER' ? isWater(lng, lat) : !isWater(lng, lat)
+}
+
+// A random domain-valid point for a patroller to head toward — preferring a spot
+// inside the current viewport so patrols stay on-screen, falling back to a small
+// offset from `origin`. null if nothing valid was found.
+function pickWanderTarget(kind: HostileType, origin: [number, number]): [number, number] | null {
+  const vp = getViewport()
+  if (vp) {
+    const w = vp.east - vp.west
+    const h = vp.north - vp.south
+    for (let k = 0; k < 24; k++) {
+      const lng = vp.west + Math.random() * w
+      const lat = vp.south + Math.random() * h
+      if (inDomain(kind, lng, lat)) return [lng, lat]
+    }
+  }
+  for (let k = 0; k < 24; k++) {
+    const lng = origin[0] + (Math.random() - 0.5) * 0.3
+    const lat = origin[1] + (Math.random() - 0.5) * 0.3
+    if (inDomain(kind, lng, lat)) return [lng, lat]
+  }
+  return null
+}
+
+// Advance a patrolling hostile toward its wander waypoint, picking a fresh one
+// when it arrives (or when the straight step would leave its domain). Ambient
+// only — no detection, no damage.
+function stepPatrol(d: Drone, baseStepDeg: number): Drone {
+  let target = d.wanderTarget
+  if (!target || distanceKm(d.position, target) <= PATROL_WAYPOINT_REACH_KM) {
+    target = pickWanderTarget(d.kind, d.position)
+  }
+  if (!target) return d // nowhere valid to go — hold position
+  const dLng = target[0] - d.position[0]
+  const dLat = target[1] - d.position[1]
+  const mag = Math.sqrt(dLng * dLng + dLat * dLat) || 1
+  const stepDeg = baseStepDeg * (HOSTILE_SPEED_KMH[d.kind] / DRONE_SPEED_KMH) * PATROL_SPEED_SCALE
+  const mvLng = dLng / mag
+  const mvLat = dLat / mag
+  const newPos: [number, number] = [d.position[0] + mvLng * stepDeg, d.position[1] + mvLat * stepDeg]
+  // If the step would cross into the wrong terrain, drop this waypoint and hold;
+  // a new one is chosen next frame.
+  if (!inDomain(d.kind, newPos[0], newPos[1])) return { ...d, wanderTarget: null }
+  const heading = (Math.atan2(mvLng, mvLat) * 180) / Math.PI
+  const track = d.track.length > 60 ? [...d.track.slice(-60), newPos] : [...d.track, newPos]
+  return { ...d, position: newPos, heading, track, wanderTarget: target }
 }
 
 // BFS a path relay -> nearest reachable FOB through the mesh. A virtual SINK is
@@ -311,7 +383,7 @@ function makePacket(waypoints: number[][], startTime: number, seq: number): Pack
   }
 }
 
-const DEFAULT_FOBS: Fob[] = [{ id: 'FOB-1', position: FOB_POSITION }]
+const DEFAULT_FOBS: Fob[] = [{ id: 'FOB-1', position: FOB_POSITION, hp: FOB_MAX_HP, maxHp: FOB_MAX_HP }]
 const EMPTY_HEALTH: MeshHealth = { nodes: 0, totalNodes: 0, links: 0, latency: 0, health: 0 }
 
 export interface SandboxStore extends SandboxState {
@@ -379,6 +451,7 @@ const initialState: SandboxState = {
   _interceptorSeq: 0,
   _rfLastEmit: 0,
   _rfPhase: 0,
+  _lastPatrolSpawn: 0,
 }
 
 // Stable per-id hash for de-syncing each node's gate phase.
@@ -542,6 +615,8 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
       connections: [],
       elevation: elevationAt(lngLat[0], lngLat[1]),
       pad: computePad(lngLat[0], lngLat[1]),
+      hp: RELAY_MAX_HP,
+      maxHp: RELAY_MAX_HP,
     }
     const relays = [...state.relays, relay]
     const conns = formConnections(relays)
@@ -562,6 +637,8 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
       position: lngLat,
       elevation: elevationAt(lngLat[0], lngLat[1]),
       pad: computePad(lngLat[0], lngLat[1]),
+      hp: FOB_MAX_HP,
+      maxHp: FOB_MAX_HP,
     }
     // New FOB may give relays a shorter path — recolor mesh via heal pass.
     const conns = healMesh(state.relays, state.connections)
@@ -594,6 +671,7 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
     const drone: Drone = {
       id: `D-${seq}`,
       kind,
+      behavior: 'attack',
       position: lngLat,
       heading,
       alive: true,
@@ -665,6 +743,7 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
       newDrones.push({
         id: `D-${state._droneSeq + i + 1}`,
         kind,
+        behavior: 'attack',
         position: pos,
         heading,
         alive: true,
@@ -705,9 +784,17 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
     let bursts = state.bursts
     let packetSeq = state._packetSeq
     let kills = 0
+    // Kamikaze damage accrued this tick: struck asset id → number of hits.
+    const relayHits = new Map<string, number>()
+    const fobHits = new Map<string, number>()
 
     const drones: Drone[] = state.drones.map(d => {
       if (!d.alive) return d
+
+      // Ambient patrollers wander their own domain and never engage — no
+      // detection, no routing, no damage. Pure scenery with natural movement.
+      if (d.behavior === 'patrol') return stepPatrol(d, baseStepDeg)
+
       // Always steer toward the closest FOB — placing a new, nearer FOB
       // reroutes live hostiles to it.
       const target = nearestFob(d.position, fobs)
@@ -797,13 +884,25 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
         }
       }
 
-      // Fail-safe only: if an uncommitted drone reaches the FOB, kill at the
-      // base. Normal kills happen via the tracking interceptor below.
-      const pointBlank = target && distanceKm(newPos, target.position) <= INTERCEPT_RADIUS_KM
-      if (pointBlank && target && !d.engaged) {
-        kills += 1
+      // Kamikaze: an attacker that reaches a node detonates on it; otherwise it
+      // detonates on the FOB it's targeting. The drone is consumed either way and
+      // the struck asset takes damage (applied after the loop). Nodes are checked
+      // first since perimeter relays are reached on the way in.
+      let hitRelay: Relay | null = null
+      for (const r of relays) {
+        if (r.status !== 'online') continue
+        if (distanceKm(newPos, r.position) <= NODE_KAMIKAZE_KM) { hitRelay = r; break }
+      }
+      if (hitRelay) {
+        relayHits.set(hitRelay.id, (relayHits.get(hitRelay.id) ?? 0) + 1)
         bursts = [...bursts, { id: `b${d.id}`, position: newPos, elevation: elevationAt(newPos[0], newPos[1]), startedAt: at }]
-        log = pushLog(log, `${d.id}: NEUTRALIZED at ${target.id} perimeter`, 'kill')
+        log = pushLog(log, `${hitRelay.id}: HIT — ${d.id} detonated on node`, 'kill')
+        return { ...d, position: newPos, heading, track, detected, engageAt, targetFobId, alive: false, killAt: at }
+      }
+      if (target && distanceKm(newPos, target.position) <= INTERCEPT_RADIUS_KM) {
+        fobHits.set(target.id, (fobHits.get(target.id) ?? 0) + 1)
+        bursts = [...bursts, { id: `b${d.id}`, position: newPos, elevation: elevationAt(newPos[0], newPos[1]), startedAt: at }]
+        log = pushLog(log, `${target.id}: BREACHED — ${d.id} detonated on perimeter`, 'kill')
         return { ...d, position: newPos, heading, track, detected, engageAt, targetFobId, alive: false, killAt: at }
       }
 
@@ -870,13 +969,93 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
     )
     kills += impacted.size
 
-    relays = relays.map(r => {
+    // Apply kamikaze damage to nodes + recompute per-relay alert state in one
+    // pass. Reuse the previous array reference when nothing changed so the static
+    // deck.gl mesh layers keyed on `relays` stay memoized instead of being rebuilt
+    // ~60x/sec. Only attacking hostiles raise an alert.
+    const destroyedRelayIds: string[] = []
+    const remappedRelays = relays.map(r => {
       if (r.status !== 'online') return r
-      const alert = drones2.some(d => d.alive && distanceKm(d.position, r.position) <= r.range)
-      return alert === !!r.alert ? r : { ...r, alert }
+      const maxHp = r.maxHp ?? RELAY_MAX_HP
+      const hits = relayHits.get(r.id) ?? 0
+      const hp = Math.max(0, (r.hp ?? maxHp) - hits * KAMIKAZE_DAMAGE)
+      if (hp <= 0) {
+        destroyedRelayIds.push(r.id)
+        return { ...r, hp: 0, alert: false, status: 'destroyed' as const, connections: [] }
+      }
+      const alert = drones2.some(d => d.alive && d.behavior === 'attack' && distanceKm(d.position, r.position) <= r.range)
+      if (hits || alert !== !!r.alert) return { ...r, hp, alert }
+      return r
     })
+    relays = remappedRelays.some((r, i) => r !== relays[i]) ? remappedRelays : relays
+
+    // Nodes lost to hostiles drop their links and the mesh self-heals around them.
+    let connections = state.connections
+    let meshHealth = state.meshHealth
+    if (destroyedRelayIds.length) {
+      const lost = new Set(destroyedRelayIds)
+      connections = healMesh(relays, state.connections.filter(c => !lost.has(c.from) && !lost.has(c.to)))
+      meshHealth = computeHealth(relays, connections)
+      const rerouted = connections.filter(c => c.status === 'rerouted').length
+      for (const id of destroyedRelayIds) {
+        log = pushLog(log, `${id} DESTROYED — node lost to hostile strike`, 'kill')
+      }
+      if (rerouted) log = pushLog(log, `MESH self-healing — ${rerouted} paths rerouted`, 'warn')
+    }
+
+    // Apply kamikaze damage to FOBs (hardened — survives several breaches).
+    let fobsOut = state.fobs
+    if (fobHits.size) {
+      fobsOut = state.fobs.map(f => {
+        const hits = fobHits.get(f.id) ?? 0
+        if (!hits || f.destroyed) return f
+        const maxHp = f.maxHp ?? FOB_MAX_HP
+        const hp = Math.max(0, f.hp - hits * KAMIKAZE_DAMAGE)
+        if (hp <= 0) {
+          log = pushLog(log, `${f.id} DESTROYED — command overrun`, 'kill')
+          return { ...f, hp: 0, destroyed: true }
+        }
+        log = pushLog(log, `${f.id} hull ${Math.round((hp / maxHp) * 100)}% — breach absorbed`, 'alert')
+        return { ...f, hp }
+      })
+    }
 
     const liveDrones = drones2.filter(d => d.alive || (d.killAt !== null && at - d.killAt < 1200))
+
+    // Ambient patrol spawns — only in normal sandbox mode (never during the
+    // scripted tour), capped, and only when there's a viewport to wander within.
+    let droneSeq = state._droneSeq
+    let lastPatrolSpawn = state._lastPatrolSpawn
+    let dronesOut = liveDrones
+    const tourDone = !state.tour.active || state.tour.step === 'done'
+    if (tourDone && at - lastPatrolSpawn >= PATROL_SPAWN_INTERVAL_MS) {
+      lastPatrolSpawn = at
+      const patrolCount = liveDrones.filter(d => d.alive && d.behavior === 'patrol').length
+      const vp = getViewport()
+      if (vp && patrolCount < PATROL_MAX_COUNT) {
+        const kinds: HostileType[] = ['AIR', 'WATER', 'GROUND']
+        const kind = kinds[Math.floor(Math.random() * kinds.length)]
+        const spawn = pickWanderTarget(kind, [vp.centerLng, vp.centerLat])
+        if (spawn) {
+          droneSeq += 1
+          dronesOut = [...liveDrones, {
+            id: `P-${droneSeq}`,
+            kind,
+            behavior: 'patrol',
+            position: spawn,
+            heading: Math.random() * 360 - 180,
+            alive: true,
+            detected: false,
+            track: [spawn],
+            killAt: null,
+            engageAt: null,
+            engaged: false,
+            targetFobId: null,
+            wanderTarget: null,
+          }]
+        }
+      }
+    }
     const liveInterceptors = interceptors.filter(x => x.alive)
     bursts = bursts.filter(b => at - b.startedAt < BURST_MS)
     packets = packets.filter(p => at - p.endTime < PACKET_TRAIL_MS)
@@ -923,15 +1102,20 @@ export const useSimStore = create<SandboxStore>((set, get) => ({
 
     set({
       animationTime: at,
-      drones: liveDrones,
+      drones: dronesOut,
       interceptors: liveInterceptors,
       relays,
+      fobs: fobsOut,
+      connections,
+      meshHealth,
       packets,
       bursts,
       log,
       threatsNeutralized: state.threatsNeutralized + kills,
       _packetSeq: packetSeq,
       _interceptorSeq: interceptorSeq,
+      _droneSeq: droneSeq,
+      _lastPatrolSpawn: lastPatrolSpawn,
       rfLatest,
       rfSeries,
       rfAggregate,

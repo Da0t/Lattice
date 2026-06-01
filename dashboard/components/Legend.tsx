@@ -52,6 +52,7 @@ export default function Legend() {
           <Row color="rgb(225,95,125)" label="Hostile — water" />
           <Row color="rgb(205,65,55)" label="Hostile — ground" />
           <Row color="rgb(235,130,90)" label="Interceptor" />
+          <Row color="rgb(150,140,96)" label="Patrol — ambient" />
         </div>
       )}
     </div>

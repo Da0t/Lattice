@@ -44,7 +44,8 @@ export default function SelectionPanel() {
     const rf = rfLatest[relay.id]
     props.push(
       ['Node Id', relay.id],
-      ['Status', relay.alert ? 'ALERT — threat in range' : 'ONLINE'],
+      ['Status', relay.status === 'destroyed' ? 'DESTROYED' : relay.alert ? 'ALERT — threat in range' : 'ONLINE'],
+      ['Integrity', `${Math.round(relay.hp ?? 0)}/${relay.maxHp ?? 0} hp`],
       ['Latitude', relay.position[1].toFixed(5)],
       ['Longitude', relay.position[0].toFixed(5)],
       ['Comm Range', `${Math.round(relay.range)} km`],
@@ -56,30 +57,35 @@ export default function SelectionPanel() {
     )
   } else if (fob) {
     subtitle = '[Asset] Command / FOB'
-    const guarding = drones.filter(d => d.alive).length
+    const guarding = drones.filter(d => d.alive && d.behavior === 'attack').length
     props.push(
       ['FOB Id', fob.id],
       ['Type', 'COMMAND'],
-      ['Status', 'ACTIVE'],
+      ['Status', fob.destroyed ? 'DESTROYED' : 'ACTIVE'],
+      ['Integrity', `${Math.round(fob.hp)}/${fob.maxHp} hp (${Math.round((fob.hp / fob.maxHp) * 100)}%)`],
       ['Latitude', fob.position[1].toFixed(5)],
       ['Longitude', fob.position[0].toFixed(5)],
-      ['Tracking', `${guarding} hostile${guarding === 1 ? '' : 's'}`],
+      ['Tracking', `${guarding} threat${guarding === 1 ? '' : 's'}`],
       ['Engagement', 'auto-intercept at range'],
     )
   } else if (drone) {
-    const cls = drone.kind === 'AIR' ? 'HOSTILE UAV' : drone.kind === 'WATER' ? 'HOSTILE VESSEL' : 'HOSTILE VEHICLE'
-    subtitle = `[Hostile] ${drone.kind === 'AIR' ? 'Aerial' : drone.kind === 'WATER' ? 'Surface' : 'Ground'}`
+    const patrol = drone.behavior === 'patrol'
+    const domain = drone.kind === 'AIR' ? 'Aerial' : drone.kind === 'WATER' ? 'Surface' : 'Ground'
+    const cls = patrol
+      ? `PATROL ${drone.kind === 'AIR' ? 'UAV' : drone.kind === 'WATER' ? 'VESSEL' : 'VEHICLE'}`
+      : drone.kind === 'AIR' ? 'HOSTILE UAV' : drone.kind === 'WATER' ? 'HOSTILE VESSEL' : 'HOSTILE VEHICLE'
+    subtitle = `[${patrol ? 'Ambient' : 'Hostile'}] ${domain}`
     const fob0 = fobs[0]
     const dist = fob0 ? Math.round(Math.hypot((drone.position[0] - fob0.position[0]) * 93, (drone.position[1] - fob0.position[1]) * 111)) : 0
     props.push(
       ['Track Id', drone.id],
       ['Class', cls],
-      ['Status', drone.detected ? 'TRACKED' : 'INBOUND'],
-      ['Target FOB', drone.targetFobId ?? '—'],
+      ['Status', patrol ? 'PATROLLING' : drone.detected ? 'TRACKED' : 'INBOUND'],
+      ['Target FOB', patrol ? '— (patrol)' : drone.targetFobId ?? '—'],
       ['Latitude', drone.position[1].toFixed(5)],
       ['Longitude', drone.position[0].toFixed(5)],
       ['Range to FOB', `${dist} km`],
-      ['Engagement', drone.engaged ? 'interceptor tracking' : drone.detected ? 'firing solution' : 'pending detection'],
+      ['Engagement', patrol ? 'not engaging' : drone.engaged ? 'interceptor tracking' : drone.detected ? 'firing solution' : 'pending detection'],
     )
   }
 

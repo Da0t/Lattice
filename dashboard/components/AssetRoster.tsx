@@ -34,7 +34,11 @@ export default function AssetRoster() {
 
   if (filter === 'ALL' || filter === 'FOB') {
     fobs.forEach(f => rows.push({
-      id: f.id, kind: 'CMD', status: 'ACTIVE', level: 'info', detail: 'command node',
+      id: f.id,
+      kind: 'CMD',
+      status: f.destroyed ? 'DOWN' : 'ACTIVE',
+      level: f.destroyed ? 'kill' : 'info',
+      detail: `command node · hull ${Math.round((f.hp / f.maxHp) * 100)}%`,
     }))
   }
 
@@ -46,7 +50,7 @@ export default function AssetRoster() {
         kind: 'RLY',
         status: r.alert ? 'ALERT' : 'ONLINE',
         level: r.alert ? 'alert' : 'info',
-        detail: `${r.connections.length} links · ${relayLatency(r, connections)}ms · ${Math.round(r.range)}km`,
+        detail: `${Math.round(r.hp ?? 0)}/${r.maxHp ?? 0}hp · ${r.connections.length} links · ${relayLatency(r, connections)}ms`,
       }))
   }
 
@@ -59,9 +63,13 @@ export default function AssetRoster() {
             (d.position[1] - fob.position[1]) * 111))
         : 0
       const kindLabel = d.kind === 'AIR' ? 'UAV' : d.kind === 'WATER' ? 'VSL' : 'VEH'
+      const patrol = d.behavior === 'patrol'
       rows.push({
-        id: d.id, kind: kindLabel, status: d.detected ? 'TRACKED' : 'INBOUND',
-        level: 'kill', detail: `${dist}km from FOB`,
+        id: d.id,
+        kind: kindLabel,
+        status: patrol ? 'PATROL' : d.detected ? 'TRACKED' : 'INBOUND',
+        level: patrol ? 'warn' : 'kill',
+        detail: patrol ? `patrolling · ${dist}km out` : `${dist}km from FOB`,
       })
     })
   }
